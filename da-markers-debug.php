@@ -1,375 +1,367 @@
 <?php
 /**
- * =====================================
- * DA МАРКЕРЫ - ДИАГНОСТИЧЕСКАЯ ВЕРСИЯ
- * =====================================
+ * DA Markers - ОТЛАДОЧНАЯ ВЕРСИЯ
+ * Показывает детали работы + демо режим
  */
 
-// Добавляем CSS стили для мигания
-add_action('wp_head', function() {
-    ?>
-    <style type="text/css">
-    /* DA маркеры - мигание */
-    @keyframes da-blink {
-        0% { 
-            opacity: 1; 
-            transform: scale(1);
-            filter: drop-shadow(0 0 8px #ff0000);
-        }
-        50% { 
-            opacity: 0.4; 
-            transform: scale(1.4);
-            filter: drop-shadow(0 0 25px #ff0000);
-        }
-        100% { 
-            opacity: 1; 
-            transform: scale(1);
-            filter: drop-shadow(0 0 8px #ff0000);
-        }
+// Добавляем мета-бокс в админку объявлений
+add_action('add_meta_boxes', 'add_da_marker_meta_box');
+function add_da_marker_meta_box() {
+    add_meta_box(
+        'da_marker_box',
+        'DA Маркер (мигание на карте)',
+        'da_marker_meta_box_callback',
+        'estate',
+        'side',
+        'high'
+    );
+}
+
+// Содержимое мета-бокса
+function da_marker_meta_box_callback($post) {
+    wp_nonce_field('da_marker_meta_box', 'da_marker_meta_box_nonce');
+    
+    $value = get_post_meta($post->ID, '_da_marker_enabled', true);
+    
+    echo '<label for="da_marker_enabled">';
+    echo '<input type="checkbox" id="da_marker_enabled" name="da_marker_enabled" value="1" ' . checked($value, '1', false) . ' />';
+    echo ' Включить мигание маркера на карте';
+    echo '</label>';
+    echo '<p><small>Если отмечено, маркер этого объявления будет мигать красным на карте</small></p>';
+    
+    // Отладочная информация
+    echo '<hr><h4>Отладка:</h4>';
+    echo '<p><strong>ID объявления:</strong> ' . $post->ID . '</p>';
+    echo '<p><strong>Текущее значение галочки:</strong> ' . ($value ? 'Включено' : 'Выключено') . '</p>';
+    
+    // Координаты
+    $lat = get_post_meta($post->ID, 'myhome_lat', true);
+    $lng = get_post_meta($post->ID, 'myhome_lng', true);
+    echo '<p><strong>Координаты:</strong> ' . ($lat && $lng ? $lat . ', ' . $lng : 'Не указаны') . '</p>';
+}
+
+// Сохраняем значение галочки
+add_action('save_post', 'save_da_marker_meta_box_data');
+function save_da_marker_meta_box_data($post_id) {
+    if (!isset($_POST['da_marker_meta_box_nonce']) || !wp_verify_nonce($_POST['da_marker_meta_box_nonce'], 'da_marker_meta_box')) {
+        return;
     }
 
-    /* Применяем анимацию к маркерам с классом da-marker-blink */
-    .mh-map-pin.da-marker-blink {
-        animation: da-blink 2.5s infinite ease-in-out !important;
-        z-index: 9999 !important;
-        position: relative !important;
-        background-color: rgba(255, 0, 0, 0.15) !important;
-        border: 3px solid #ff0000 !important;
-        border-radius: 50% !important;
-        box-shadow: 0 0 15px rgba(255, 0, 0, 0.6) !important;
+    if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+        return;
     }
 
-    /* Делаем иконку внутри маркера красной */
-    .mh-map-pin.da-marker-blink i.flaticon-pin {
-        color: #ff0000 !important;
-        text-shadow: 0 0 5px rgba(255, 0, 0, 0.8) !important;
-    }
-
-    /* Дополнительные стили для выделения */
-    .mh-map-pin.da-marker-blink::before {
-        content: '';
-        position: absolute;
-        top: -5px;
-        left: -5px;
-        right: -5px;
-        bottom: -5px;
-        border: 2px solid rgba(255, 0, 0, 0.5);
-        border-radius: 50%;
-        animation: da-pulse 3s infinite ease-in-out;
-    }
-
-    @keyframes da-pulse {
-        0%, 100% { 
-            transform: scale(1);
-            opacity: 0.7;
+    if (isset($_POST['post_type']) && 'estate' == $_POST['post_type']) {
+        if (!current_user_can('edit_page', $post_id)) {
+            return;
         }
-        50% { 
-            transform: scale(1.2);
-            opacity: 0.3;
+    } else {
+        if (!current_user_can('edit_post', $post_id)) {
+            return;
         }
     }
 
-    /* ТЕСТОВЫЙ стиль - применяем ко всем маркерам для проверки */
-    .mh-map-pin.test-style {
-        border: 5px solid blue !important;
-        background-color: rgba(0, 0, 255, 0.2) !important;
+    if (isset($_POST['da_marker_enabled'])) {
+        update_post_meta($post_id, '_da_marker_enabled', '1');
+    } else {
+        update_post_meta($post_id, '_da_marker_enabled', '0');
     }
-    </style>
-    <?php
-});
+}
 
-// AJAX для получения DA маркеров
-add_action('wp_ajax_get_da_markers', 'ajax_get_da_markers');
-add_action('wp_ajax_nopriv_get_da_markers', 'ajax_get_da_markers');
-
-function ajax_get_da_markers() {
-    // Получаем DA объявления
-    $da_properties = get_posts(array(
+// AJAX для получения ID объявлений с включенным DA маркером + отладка
+add_action('wp_ajax_get_da_marker_ids_debug', 'ajax_get_da_marker_ids_debug');
+add_action('wp_ajax_nopriv_get_da_marker_ids_debug', 'ajax_get_da_marker_ids_debug');
+function ajax_get_da_marker_ids_debug() {
+    // Получаем все объявления estate для отладки
+    $all_estates = get_posts(array(
         'post_type' => 'estate',
-        'post_status' => 'publish',
-        'posts_per_page' => -1,
-        'tax_query' => array(
-            array(
-                'taxonomy' => 'spetspredlozheniya',
-                'field' => 'slug',
-                'terms' => 'da'
-            )
-        )
+        'numberposts' => 10, // Берем первые 10 для отладки
+        'post_status' => 'publish'
     ));
-
-    $markers = array();
-    foreach ($da_properties as $property) {
-        $latitude = get_post_meta($property->ID, 'myhome_lat', true);
-        $longitude = get_post_meta($property->ID, 'myhome_lng', true);
-        $address = get_post_meta($property->ID, 'myhome_property_address', true);
+    
+    $debug_info = array();
+    foreach ($all_estates as $post) {
+        $da_enabled = get_post_meta($post->ID, '_da_marker_enabled', true);
+        $lat = get_post_meta($post->ID, 'myhome_lat', true);
+        $lng = get_post_meta($post->ID, 'myhome_lng', true);
         
-        $markers[] = array(
-            'id' => $property->ID,
-            'title' => $property->post_title,
-            'slug' => $property->post_name,
-            'latitude' => floatval($latitude),
-            'longitude' => floatval($longitude),
-            'address' => $address
+        $debug_info[] = array(
+            'id' => $post->ID,
+            'title' => $post->post_title,
+            'da_enabled' => $da_enabled,
+            'has_coordinates' => !empty($lat) && !empty($lng),
+            'lat' => $lat,
+            'lng' => $lng
         );
     }
-
+    
+    // Получаем объявления с включенным DA
+    $da_posts = get_posts(array(
+        'post_type' => 'estate',
+        'numberposts' => -1,
+        'meta_query' => array(
+            array(
+                'key' => '_da_marker_enabled',
+                'value' => '1',
+                'compare' => '='
+            )
+        ),
+        'fields' => 'ids'
+    ));
+    
+    $da_data = array();
+    foreach ($da_posts as $post_id) {
+        $lat = get_post_meta($post_id, 'myhome_lat', true);
+        $lng = get_post_meta($post_id, 'myhome_lng', true);
+        $title = get_the_title($post_id);
+        
+        if ($lat && $lng) {
+            $da_data[] = array(
+                'id' => $post_id,
+                'lat' => floatval($lat),
+                'lng' => floatval($lng),
+                'title' => $title
+            );
+        }
+    }
+    
     wp_send_json_success(array(
-        'markers' => $markers,
-        'count' => count($markers)
+        'da_markers' => $da_data,
+        'count' => count($da_data),
+        'debug_info' => $debug_info,
+        'total_estates' => count($all_estates)
     ));
 }
 
-// Добавляем JavaScript для мигания маркеров
-add_action('wp_footer', function() {
+// Простой CSS для мигания
+add_action('wp_head', 'da_debug_css');
+function da_debug_css() {
     ?>
-    <script type="text/javascript">
-    (function($) {
-        $(document).ready(function() {
-            console.log('🎯 DA Маркеры - диагностическая версия загружена');
+    <style>
+    @keyframes da-blink {
+        0%, 100% { 
+            filter: drop-shadow(0 0 10px #ff0066);
+            opacity: 1;
+        }
+        50% { 
+            filter: drop-shadow(0 0 20px #ff0066);
+            opacity: 0.7;
+        }
+    }
+
+    .mh-map-pin.da-blink {
+        animation: da-blink 1.5s infinite;
+    }
+
+    .mh-map-pin.da-blink i {
+        color: #ff0066 !important;
+    }
+    
+    /* Демо режим - другой цвет */
+    .mh-map-pin.da-demo {
+        animation: da-blink 1.5s infinite;
+    }
+
+    .mh-map-pin.da-demo i {
+        color: #00ff66 !important;
+    }
+    </style>
+    <?php
+}
+
+// Отладочный JavaScript
+add_action('wp_footer', 'da_debug_script');
+function da_debug_script() {
+    if (!is_page() && !is_front_page()) {
+        return;
+    }
+    ?>
+    <script>
+    jQuery(document).ready(function($) {
+        console.log('🔧 DA Маркеры - ОТЛАДОЧНАЯ ВЕРСИЯ запущена');
+        
+        let processAttempts = 0;
+        const maxAttempts = 5;
+        
+        function processDAMarkers() {
+            processAttempts++;
+            console.log('🔍 Отладочная попытка #' + processAttempts);
             
-            var daPropertyIds = [];
-            var daPropertyCoords = [];
-            var processedMarkers = new Set();
-            var debugMode = true;
+            let $markers = $('.mh-map-pin');
+            if ($markers.length === 0) {
+                console.log('⏳ Маркеры не найдены...');
+                if (processAttempts < maxAttempts) {
+                    setTimeout(processDAMarkers, 1000);
+                }
+                return;
+            }
             
-            // Получаем список DA объявлений
+            console.log('📍 Найдено маркеров:', $markers.length);
+            
+            // Получаем отладочную информацию
             $.ajax({
                 url: '<?php echo admin_url('admin-ajax.php'); ?>',
                 type: 'POST',
                 data: {
-                    action: 'get_da_markers'
+                    action: 'get_da_marker_ids_debug'
                 },
                 success: function(response) {
-                    if (response.success && response.data.markers.length > 0) {
-                        console.log('✅ Найдено DA объявлений: ' + response.data.count);
+                    console.log('📡 ПОЛНЫЙ ОТВЕТ СЕРВЕРА:', response);
+                    
+                    if (response.success) {
+                        console.log('🔧 === ОТЛАДОЧНАЯ ИНФОРМАЦИЯ ===');
+                        console.log('Всего объявлений estate:', response.data.total_estates);
+                        console.log('DA объявлений с галочкой:', response.data.count);
+                        console.log('Детали первых 10 объявлений:', response.data.debug_info);
                         
-                        var daProperties = response.data.markers;
-                        daPropertyIds = daProperties.map(function(marker) {
-                            return parseInt(marker.id);
-                        });
+                        if (response.data.da_markers.length > 0) {
+                            console.log('✅ Найдены DA объявления:', response.data.da_markers);
+                            
+                            // Убираем предыдущие классы
+                            $('.mh-map-pin').removeClass('da-blink da-demo');
+                            
+                            // Пробуем найти маркеры
+                            let foundCount = 0;
+                            
+                            // Ищем через глобальные объекты
+                            for (let globalVar in window) {
+                                if (globalVar.startsWith('MyHomeMapListing')) {
+                                    const mapObj = window[globalVar];
+                                    console.log('📊 Анализируем:', globalVar, mapObj);
+                                    
+                                    // Ищем массивы с данными
+                                    function findEstatesArray(obj, path = '') {
+                                        for (let key in obj) {
+                                            try {
+                                                let value = obj[key];
+                                                if (Array.isArray(value) && value.length > 0) {
+                                                    // Проверяем первый элемент массива
+                                                    if (value[0] && (value[0].id || value[0].lat || value[0].lng)) {
+                                                        console.log('📋 Найден массив данных:', path + '.' + key);
+                                                        console.log('📋 Первые 3 элемента:', value.slice(0, 3));
+                                                        
+                                                        // Сопоставляем с DA маркерами
+                                                        value.forEach((estate, index) => {
+                                                            if (estate && estate.id) {
+                                                                response.data.da_markers.forEach(daMarker => {
+                                                                    if (parseInt(estate.id) === parseInt(daMarker.id)) {
+                                                                        console.log('🎯 НАЙДЕН DA МАРКЕР!', daMarker.id, 'позиция в массиве:', index);
+                                                                        
+                                                                        if ($markers.eq(index).length) {
+                                                                            $markers.eq(index).addClass('da-blink');
+                                                                            foundCount++;
+                                                                            console.log('✅ Активирован маркер #' + index, 'для объявления', daMarker.id);
+                                                                        }
+                                                                    }
+                                                                });
+                                                            }
+                                                        });
+                                                    }
+                                                } else if (typeof value === 'object' && value !== null) {
+                                                    findEstatesArray(value, path + '.' + key);
+                                                }
+                                            } catch (e) {
+                                                // Игнорируем ошибки
+                                            }
+                                        }
+                                    }
+                                    
+                                    findEstatesArray(mapObj, globalVar);
+                                }
+                            }
+                            
+                            console.log('📊 Результат автоматического поиска:', foundCount, 'маркеров активировано');
+                            
+                        } else {
+                            console.log('⚠️ DA объявления не найдены в базе');
+                            console.log('💡 Возможные причины:');
+                            console.log('1. Галочки не поставлены ни на одном объявлении');
+                            console.log('2. Галочки поставлены, но объявления не имеют координат');
+                            console.log('3. Проблема с сохранением мета-полей');
+                            
+                            // ДЕМО РЕЖИМ - активируем первые 2 маркера зеленым цветом
+                            console.log('🔄 Активируем ДЕМО РЕЖИМ (зеленые маркеры)');
+                            $markers.slice(0, 2).addClass('da-demo');
+                            console.log('✅ ДЕМО: Активированы первые 2 маркера зеленым цветом');
+                        }
                         
-                        // Создаем массив координат для поиска по геолокации
-                        daPropertyCoords = daProperties.map(function(marker) {
-                            return {
-                                id: parseInt(marker.id),
-                                lat: parseFloat(marker.latitude),
-                                lng: parseFloat(marker.longitude),
-                                title: marker.title
-                            };
-                        });
-                        
-                        console.log('DA Property IDs:', daPropertyIds);
-                        console.log('DA Property Coords:', daPropertyCoords);
-                        
-                        // Запускаем диагностическую систему
-                        initDiagnosticSystem();
+                        // Финальная статистика
+                        setTimeout(() => {
+                            const daFound = $('.mh-map-pin.da-blink').length;
+                            const demoFound = $('.mh-map-pin.da-demo').length;
+                            
+                            console.log('📊 === ФИНАЛЬНАЯ СТАТИСТИКА ===');
+                            console.log('Красных DA маркеров:', daFound);
+                            console.log('Зеленых ДЕМО маркеров:', demoFound);
+                            console.log('Всего маркеров на карте:', $markers.length);
+                            
+                            if (daFound > 0) {
+                                console.log('🎉 УСПЕХ! Красные DA маркеры работают!');
+                            } else if (demoFound > 0) {
+                                console.log('🟢 ДЕМО режим активен (зеленые маркеры)');
+                                console.log('💡 Чтобы включить красные маркеры:');
+                                console.log('1. Зайдите в админку WordPress');
+                                console.log('2. Откройте любое объявление (тип estate)');
+                                console.log('3. Найдите справа блок "DA Маркер"');
+                                console.log('4. Поставьте галочку и сохраните');
+                            } else {
+                                console.log('❌ Ни один маркер не активирован');
+                            }
+                        }, 500);
                         
                     } else {
-                        console.log('⚠️ DA объявления не найдены');
+                        console.error('❌ Ошибка ответа сервера');
                     }
                 },
                 error: function(xhr, status, error) {
-                    console.error('❌ Ошибка получения DA маркеров:', error);
+                    console.error('❌ AJAX ошибка:', error);
+                    console.error('❌ Статус:', status);
+                    console.error('❌ Ответ:', xhr.responseText);
+                    
+                    // В случае ошибки активируем демо
+                    console.log('🔄 Ошибка AJAX, активируем ДЕМО РЕЖИМ');
+                    let $markers = $('.mh-map-pin');
+                    $markers.slice(0, 2).addClass('da-demo');
+                    console.log('✅ ДЕМО: Активированы первые 2 маркера зеленым цветом');
+                }
+            });
+        }
+        
+        // Запускаем обработку
+        setTimeout(processDAMarkers, 2000);
+        setTimeout(processDAMarkers, 4000);
+        
+        // Мониторим изменения
+        if (window.MutationObserver) {
+            const observer = new MutationObserver(function(mutations) {
+                let hasNewMarkers = false;
+                mutations.forEach(function(mutation) {
+                    if (mutation.addedNodes) {
+                        for (let node of mutation.addedNodes) {
+                            if (node.nodeType === 1) {
+                                if ($(node).find('.mh-map-pin').length > 0 || 
+                                    $(node).hasClass('mh-map-pin')) {
+                                    hasNewMarkers = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+                
+                if (hasNewMarkers) {
+                    console.log('🔄 Новые маркеры, повторная обработка...');
+                    setTimeout(processDAMarkers, 1000);
                 }
             });
             
-            function initDiagnosticSystem() {
-                
-                // Функция для проверки, является ли маркер DA объявлением
-                function isDAMarker(propertyId) {
-                    if (!propertyId) return false;
-                    return daPropertyIds.indexOf(parseInt(propertyId)) !== -1;
-                }
-                
-                // Функция для применения тестового стиля (для проверки)
-                function applyTestStyle(markerElement) {
-                    $(markerElement).addClass('test-style');
-                    console.log('🔵 Применен тестовый стиль к маркеру');
-                }
-                
-                // Функция для применения DA стилей к маркеру
-                function applyDAStyle(markerElement, propertyId, source) {
-                    if (!markerElement || !propertyId) {
-                        console.log('❌ Нет элемента или ID:', markerElement, propertyId);
-                        return false;
-                    }
-                    
-                    var markerId = 'marker_' + propertyId + '_' + source;
-                    if (processedMarkers.has(markerId)) {
-                        console.log('⚠️ Маркер уже обработан:', markerId);
-                        return false;
-                    }
-                    
-                    if (isDAMarker(propertyId)) {
-                        $(markerElement).addClass('da-marker-blink');
-                        processedMarkers.add(markerId);
-                        console.log('✨ УСПЕХ! Добавлен стиль мигания к маркеру ID:', propertyId, 'источник:', source);
-                        return true;
-                    } else {
-                        console.log('⚠️ Маркер не является DA объявлением:', propertyId);
-                        return false;
-                    }
-                }
-                
-                // Детальная диагностика DOM маркеров
-                function deepInspectDOMMarkers() {
-                    var allMarkers = $('.mh-map-pin');
-                    console.log('🔍 ДИАГНОСТИКА: Всего найдено маркеров в DOM:', allMarkers.length);
-                    
-                    allMarkers.each(function(index) {
-                        var $marker = $(this);
-                        var element = this;
-                        
-                        console.log('🔍 Маркер #' + index + ':');
-                        console.log('  - Элемент:', element);
-                        console.log('  - jQuery объект:', $marker);
-                        console.log('  - Классы:', element.className);
-                        console.log('  - ID элемента:', element.id);
-                        console.log('  - data-* атрибуты:', $marker.data());
-                        
-                        // Получаем все атрибуты
-                        var attrs = {};
-                        for (var i = 0; i < element.attributes.length; i++) {
-                            var attr = element.attributes[i];
-                            attrs[attr.name] = attr.value;
-                        }
-                        console.log('  - Все атрибуты:', attrs);
-                        
-                        // Проверяем родительские элементы
-                        var $parent = $marker.parent();
-                        console.log('  - Родитель:', $parent[0]);
-                        console.log('  - Данные родителя:', $parent.data());
-                        
-                        // Проверяем соседние элементы
-                        var $siblings = $marker.siblings();
-                        console.log('  - Соседние элементы:', $siblings.length);
-                        
-                        // Применяем тестовый стиль для проверки CSS
-                        if (index === 0) {
-                            applyTestStyle(element);
-                        }
-                        
-                        console.log('  -------------------');
-                    });
-                    
-                    // Проверяем глобальные переменные
-                    console.log('🌍 ДИАГНОСТИКА глобальных переменных:');
-                    console.log('  - window.myHomeMap:', window.myHomeMap);
-                    console.log('  - window.MyHomeMap:', window.MyHomeMap);
-                    console.log('  - window.myhomeMap:', window.myhomeMap);
-                    console.log('  - window.MyHome:', window.MyHome);
-                    console.log('  - window.MyHomeMapData:', window.MyHomeMapData);
-                    
-                    // Детальная проверка MyHomeMapData
-                    if (window.MyHomeMapData) {
-                        console.log('  - MyHomeMapData.estates:', window.MyHomeMapData.estates);
-                        if (window.MyHomeMapData.estates && window.MyHomeMapData.estates.length > 0) {
-                            console.log('  - Первое объявление:', window.MyHomeMapData.estates[0]);
-                        }
-                    }
-                }
-                
-                // Попытка прямого сопоставления по индексу
-                function tryDirectMapping() {
-                    var allMarkers = $('.mh-map-pin');
-                    console.log('🎯 ПРЯМОЕ СОПОСТАВЛЕНИЕ: Пробуем связать маркеры с MyHomeMapData');
-                    
-                    if (window.MyHomeMapData && window.MyHomeMapData.estates) {
-                        var estates = window.MyHomeMapData.estates;
-                        console.log('  - Количество объявлений в данных:', estates.length);
-                        console.log('  - Количество маркеров в DOM:', allMarkers.length);
-                        
-                        allMarkers.each(function(index) {
-                            var $marker = $(this);
-                            var estate = estates[index];
-                            
-                            if (estate) {
-                                console.log('  - Маркер #' + index + ' <-> Объявление:', estate);
-                                
-                                var propertyId = estate.id;
-                                if (propertyId && applyDAStyle(this, propertyId, 'direct_mapping_' + index)) {
-                                    console.log('🎉 УСПЕХ прямого сопоставления!');
-                                }
-                            }
-                        });
-                    }
-                }
-                
-                // Попытка сопоставления по координатам
-                function tryCoordinateMapping() {
-                    console.log('🌍 СОПОСТАВЛЕНИЕ ПО КООРДИНАТАМ');
-                    
-                    if (window.MyHomeMapData && window.MyHomeMapData.estates) {
-                        var estates = window.MyHomeMapData.estates;
-                        
-                        estates.forEach(function(estate, index) {
-                            if (estate.position && estate.position.lat && estate.position.lng) {
-                                var lat = parseFloat(estate.position.lat);
-                                var lng = parseFloat(estate.position.lng);
-                                
-                                console.log('  - Объявление #' + index + ':', estate.name, 'координаты:', lat, lng);
-                                
-                                // Ищем соответствующий DA маркер
-                                var daMatch = daPropertyCoords.find(function(coord) {
-                                    return Math.abs(coord.lat - lat) < 0.0001 && 
-                                           Math.abs(coord.lng - lng) < 0.0001;
-                                });
-                                
-                                if (daMatch) {
-                                    console.log('  ✅ НАЙДЕНО СОВПАДЕНИЕ:', daMatch);
-                                    
-                                    // Находим соответствующий DOM элемент
-                                    var $correspondingMarker = $('.mh-map-pin').eq(index);
-                                    if ($correspondingMarker.length && applyDAStyle($correspondingMarker[0], daMatch.id, 'coordinate_mapping_' + index)) {
-                                        console.log('🎉 УСПЕХ сопоставления по координатам!');
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-                
-                // Принудительное применение стилей для тестирования
-                function forceApplyTestStyles() {
-                    console.log('🚨 ПРИНУДИТЕЛЬНОЕ ПРИМЕНЕНИЕ для тестирования');
-                    
-                    var $firstTwo = $('.mh-map-pin').slice(0, 2);
-                    $firstTwo.each(function(index) {
-                        $(this).addClass('da-marker-blink');
-                        console.log('🚨 Принудительно применен стиль к маркеру #' + index);
-                    });
-                    
-                    setTimeout(function() {
-                        console.log('🔍 Проверка примененных стилей:');
-                        $('.da-marker-blink').each(function(i) {
-                            console.log('  - Маркер с da-marker-blink #' + i + ':', this);
-                        });
-                    }, 1000);
-                }
-                
-                // Запускаем диагностику
-                setTimeout(function() {
-                    console.log('🚀 НАЧИНАЕМ ДИАГНОСТИКУ...');
-                    
-                    deepInspectDOMMarkers();
-                    
-                    setTimeout(function() {
-                        tryDirectMapping();
-                        
-                        setTimeout(function() {
-                            tryCoordinateMapping();
-                            
-                            setTimeout(function() {
-                                forceApplyTestStyles();
-                            }, 2000);
-                        }, 2000);
-                    }, 2000);
-                }, 3000);
-                
-                console.log('🚀 Диагностическая система запущена');
-            }
-        });
-    })(jQuery);
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        }
+    });
     </script>
     <?php
-});
+}
+?>
